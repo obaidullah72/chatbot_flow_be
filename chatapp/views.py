@@ -87,11 +87,16 @@ def generate_questions_view(request):
     except (TypeError, ValueError):
         count = 10
 
-    questions = generate_question_set(
-        topic=str(payload["topic"]),
-        count=count,
-        language=str(language),
-    )
+    # Generate questions dynamically from the LLM (no hard-coded templates).
+    try:
+        questions = generate_question_set(
+            topic=str(payload["topic"]),
+            count=count,
+            language=str(language),
+        )
+    except RuntimeError as exc:
+        # Clearly surface misconfiguration issues (e.g. missing API key)
+        return JsonResponse({"error": str(exc)}, status=500)
 
     # Save questions to database
     try:

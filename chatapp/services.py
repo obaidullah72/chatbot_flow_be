@@ -4,8 +4,11 @@ import random
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence
 
+import requests
+
 from .models import Answer, FollowUp, Question, Session
 
+LLAMA_API_URL = "https://llm.your-auditor.ai/api/generate"
 MIN_FOLLOW_UP_COUNT = 1
 FOLLOW_UP_COUNT = 8
 DEFAULT_LANGUAGE = "en"
@@ -609,93 +612,76 @@ def generate_question_set(
     language: str = DEFAULT_LANGUAGE,
 ) -> List[str]:
     """
-    Generate a **set of unique, high-quality practice questions** for a topic.
-    Uses random selection from a large pool of varied templates to ensure
-    different questions each time.
+    Generate a set of practice questions for a topic using the LLAMA API.
+
+    This calls the external service at ``LLAMA_API_URL`` with a single prompt
+    and expects a plaintext response containing one question per line.
     """
 
-    safe_count = max(1, min(count, QUESTION_COUNT))
-    
-    # Large pool of varied question templates
-    all_templates = [
-        # Core concepts
-        "Explain the core concept of {topic} and when you would use it.",
-        "What is {topic} and what problem does it solve?",
-        "Describe the fundamental principles behind {topic}.",
-        "What are the key characteristics that define {topic}?",
-        
-        # Architecture & Design
-        "Describe the main building blocks or architecture of a typical {topic} solution.",
-        "What is the typical structure or design pattern used in {topic}?",
-        "How is {topic} typically organized or structured?",
-        "What components make up a standard {topic} implementation?",
-        
-        # Code & Implementation
-        "Show a short code example that demonstrates {topic} in practice and explain it line by line.",
-        "Write a simple example showing how {topic} works in code.",
-        "Demonstrate {topic} with a practical code snippet and explain each part.",
-        "Provide a code example that illustrates the basic usage of {topic}.",
-        
-        # Comparisons & Trade-offs
-        "What are the biggest advantages and disadvantages of using {topic} compared to alternatives?",
-        "How does {topic} compare to similar technologies or approaches?",
-        "What are the pros and cons of choosing {topic} for a project?",
-        "When should you use {topic} versus other options?",
-        
-        # Real-world Applications
-        "Describe a realistic real-world application where {topic} is a great fit and explain why.",
-        "Give an example of a practical scenario where {topic} would be the best choice.",
-        "What types of projects or problems benefit most from using {topic}?",
-        "Describe a real-world use case for {topic} and explain the benefits.",
-        
-        # Common Issues & Mistakes
-        "Explain common mistakes or pitfalls developers face when working with {topic}, and how to avoid them.",
-        "What are the most frequent errors people make with {topic} and how can they be prevented?",
-        "What should developers be careful about when using {topic}?",
-        "What are common gotchas or traps when working with {topic}?",
-        
-        # Integration & Ecosystem
-        "How does {topic} interact with or depend on other key technologies in its ecosystem?",
-        "What other technologies or tools work well with {topic}?",
-        "How does {topic} fit into the broader technology landscape?",
-        "What dependencies or integrations are typically needed for {topic}?",
-        
-        # Debugging & Problem-solving
-        "Imagine a bug caused by incorrect use of {topic}. How would you debug and fix it?",
-        "If something goes wrong with {topic}, what steps would you take to troubleshoot?",
-        "Describe a debugging scenario involving {topic} and how you would resolve it.",
-        "What debugging strategies work best for {topic}-related issues?",
-        
-        # Teaching & Explanation
-        "How would you teach {topic} to a beginner who already knows basic programming?",
-        "Explain {topic} as if you were teaching it to someone new to the concept.",
-        "How would you introduce {topic} to a colleague who has never used it?",
-        "What's the best way to explain {topic} to someone unfamiliar with it?",
-        
-        # Summary & Best Practices
-        "Summarize {topic} in a concise paragraph, then list a few advanced tips or best practices.",
-        "Give a brief overview of {topic} and share some expert-level recommendations.",
-        "Provide a summary of {topic} along with some best practices for using it effectively.",
-        "What are the key points about {topic} and what advanced techniques should developers know?",
-        
-        # Performance & Optimization
-        "What are the performance characteristics of {topic} and how can it be optimized?",
-        "How does {topic} perform under different conditions and what affects its efficiency?",
-        "What optimization techniques are relevant when working with {topic}?",
-        
-        # Security & Best Practices
-        "What security considerations should developers keep in mind when using {topic}?",
-        "What are the security implications of using {topic} and how can risks be mitigated?",
-        "How should {topic} be used securely in production environments?",
-    ]
-    
-    # Randomly select templates to ensure variety each time
-    selected_templates = random.sample(all_templates, min(safe_count, len(all_templates)))
-    
-    # Format with topic
-    questions = [template.format(topic=topic) for template in selected_templates]
-    
-    return questions
+    # Clamp count to a safe range
+    safe_count = max(1, min(int(count or 1), QUESTION_COUNT))
+
+    system_prompt = (
+        "You are an expert trainer. Generate clear, exam-style practice "
+        "questions for software engineers. Each question must be on its own "
+        "line, with no numbering, no answers, and no extra commentary."
+    )
+    user_prompt = (
+        f"Topic: {topic}\n"
+        f"Language: {language}\n"
+        f"Number of questions: {safe_count}\n\n"
+        "Return exactly that many distinct questions, one per line."
+    )
+
+    full_prompt = f"{system_prompt}\n\n{user_prompt}"
+
+    payload: Dict[str, Any] = {
+        "model": "openhermes",
+        "prompt": full_prompt,
+        "stream": False,
+    }
+
+    response = requests.post(
+        LLAMA_API_URL,
+        headers={"Content-Type": "application/json"},
+        json=payload,
+        timeout=30
+    )
+    response.raise_for_status()
+
+    data = response.json()
+    raw_text = data.get("response", "") or ""
+    if not isinstance(raw_text, str):
+        raw_text = str(raw_text)
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+
+    # Strip leading numbering like "1. " or "- " if present
+    cleaned: List[str] = []
+    for line in lines:
+        cleaned_line = line.lstrip("-•").strip()
+        # Remove leading "1. ", "2) ", etc.
+        if cleaned_line and cleaned_line[0].isdigit():
+            # Find first space after the number/marker
+            idx = 0
+            while idx < len(cleaned_line) and (
+                cleaned_line[idx].isdigit() or cleaned_line[idx] in {".", ")", ":"}
+            ):
+                idx += 1
+            cleaned_line = cleaned_line[idx:].lstrip()
+        if cleaned_line:
+            cleaned.append(cleaned_line)
+
+    # Ensure we have the requested amount; if the model under‑returns, just
+    # reuse what we have so the API remains stable.
+    if not cleaned:
+        raise RuntimeError("LLM returned no usable questions.")
+
+    if len(cleaned) < safe_count:
+        # Repeat from the start to pad
+        while len(cleaned) < safe_count:
+            cleaned.extend(cleaned)
+
+    return cleaned[:safe_count]
 
 
 def _planned_followup_target(initial_score: float) -> int:
